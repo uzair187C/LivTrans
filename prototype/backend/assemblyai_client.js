@@ -61,6 +61,12 @@ export class AssemblyAIStreamingClient extends EventEmitter {
   }
 
   handleMessage(msg) {
+    if (msg.type === 'Error') {
+      console.error(`[AssemblyAI Error ${msg.error_code}]:`, msg.error);
+      this.emit('error', new Error(msg.error || `AssemblyAI Error ${msg.error_code}`));
+      return;
+    }
+
     // Handle v3 messages
     if (msg.type === 'Begin') {
       console.log(`[AssemblyAI] Session started (ID: ${msg.id})`);
@@ -95,11 +101,23 @@ export class AssemblyAIStreamingClient extends EventEmitter {
   }
 
   sendAudio(pcmChunk) {
-    if (this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(pcmChunk);
-    } else {
-      if (this.audioQueue.length < 50) {
-        this.audioQueue.push(pcmChunk);
+    const buf = Buffer.isBuffer(pcmChunk) ? pcmChunk : Buffer.from(pcmChunk);
+    if (!this.chunkBuffer) this.chunkBuffer = Buffer.alloc(0);
+    this.chunkBuffer = Buffer.concat([this.chunkBuffer, buf]);
+
+    // AssemblyAI v3 enforces chunks between 50ms (1600 bytes) and 1000ms (32000 bytes).
+    // We send consistent 100ms frames (1600 samples * 2 = 3200 bytes) for optimal latency & stability.
+    const CHUNK_SIZE = 3200;
+    while (this.chunkBuffer.length >= CHUNK_SIZE) {
+      const frame = this.chunkBuffer.subarray(0, CHUNK_SIZE);
+      this.chunkBuffer = this.chunkBuffer.subarray(CHUNK_SIZE);
+
+      if (this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(frame);
+      } else {
+        if (this.audioQueue.length < 50) {
+          this.audioQueue.push(frame);
+        }
       }
     }
   }
@@ -107,6 +125,10 @@ export class AssemblyAIStreamingClient extends EventEmitter {
   close() {
     if (this.ws) {
       try {
+        if (this.chunkBuffer && this.chunkBuffer.length >= 1600 && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.send(this.chunkBuffer);
+          this.chunkBuffer = Buffer.alloc(0);
+        }
         if (this.ws.readyState === WebSocket.OPEN) {
           this.ws.send(JSON.stringify({ type: 'Terminate' }));
         }
