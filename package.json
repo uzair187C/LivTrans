@@ -1,0 +1,12 @@
+{
+  "name": "live-translator",
+  "version": "1.0.0",
+  "description": "Live slang-aware voice translation app (Duet)",
+  "type": "module",
+  "scripts": {
+    "postinstall": "cd prototype/backend && npm install",
+    "start": "cd prototype/backend && npm start",
+    "dev": "cd prototype/backend && npm run dev",
+    "test:pipeline": "cd prototype/backend && npm run test:pipeline"
+  }
+}

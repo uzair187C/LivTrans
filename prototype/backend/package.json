@@ -1,0 +1,18 @@
+{
+  "name": "live-translator-backend",
+  "version": "1.0.0",
+  "description": "Live slang-aware voice translation pipeline backend",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test:pipeline": "node test_pipeline.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "ws": "^8.18.1"
+  }
+}

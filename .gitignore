@@ -1,0 +1,47 @@
+# Environment and secrets
+.env
+.env.*
+*.env
+!.env.example
+!prototype/.env.example
+All Imp info..txt
+*secret*
+*key*
+
+# Node dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Operating System
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+logs/
+*.log
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary and build outputs
+dist/
+build/
+.cache/

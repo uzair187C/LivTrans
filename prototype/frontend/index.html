@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Duet — Live Voice Translation</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Top Navigation Bar -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+            <line x1="12" y1="19" x2="12" y2="22"></line>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>Duet <span class="beta-badge">Live</span></h1>
+          <p class="tagline">Slang-Aware Conversational Translation</p>
+        </div>
+      </div>
+
+      <div class="status-metrics">
+        <div id="latencyBadge" class="metric-pill" title="End-to-End Turnaround Latency">
+          <span class="icon">⚡</span>
+          <span id="latencyText">-- ms</span>
+        </div>
+        <div id="connectionStatus" class="status-pill disconnected">
+          <span class="status-dot"></span>
+          <span id="statusLabel">Disconnected</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Controls & Region Bar -->
+    <section class="controls-panel">
+      <div class="control-group">
+        <label for="regionSelect">
+          <span class="label-icon">🌎</span> Regional Nuance
+        </label>
+        <div class="select-wrapper">
+          <select id="regionSelect">
+            <option value="Mexican" selected>🇲🇽 Mexican (Güey, Chido, Neta)</option>
+            <option value="Peruvian">🇵🇪 Peruvian (Pata, Asumare, Causa)</option>
+            <option value="Argentinian">🇦🇷 Argentinian (Che, Boludo, Posta)</option>
+            <option value="Colombian">🇨🇴 Colombian (Parce, Chimba, Bacano)</option>
+            <option value="Caribbean">🇵🇷 Caribbean (Brutal, Corillo, Jangueo)</option>
+            <option value="Spain">🇪🇸 Spain (Tío, Guay, Mola)</option>
+            <option value="Neutral">🌐 Standard Latin American</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="toggles-group">
+        <label class="toggle-switch" title="Speak translated speech aloud">
+          <input type="checkbox" id="voiceOutputToggle" checked>
+          <span class="slider"></span>
+          <span class="toggle-label">Voice Output</span>
+        </label>
+        <label class="toggle-switch" title="Hardware Acoustic Echo Cancellation & Mic Gating">
+          <input type="checkbox" id="echoCancelToggle" checked>
+          <span class="slider"></span>
+          <span class="toggle-label">Echo Shield</span>
+        </label>
+      </div>
+    </section>
+
+    <!-- Main Live Conversation Area -->
+    <main class="conversation-view" id="conversationFeed">
+      <div class="empty-state" id="emptyState">
+        <div class="empty-icon">🎙️</div>
+        <h2>Start a natural conversation</h2>
+        <p>Place this device between you and your conversation partner. Speak naturally in English or Spanish with real slang and emotion.</p>
+        <div class="tip-box">
+          <span class="tip-icon">💡</span>
+          <span>Tip: The app automatically detects who is speaking and translates into natural colloquial dialogue.</span>
+        </div>
+      </div>
+
+      <!-- Live Stream Bubble (for in-progress speech) -->
+      <div class="live-bubble" id="liveBubble" style="display: none;">
+        <div class="live-indicator">
+          <span class="wave"></span>
+          <span class="wave"></span>
+          <span class="wave"></span>
+          <span class="live-label">Listening...</span>
+        </div>
+        <p class="live-text" id="livePartialText">...</p>
+      </div>
+    </main>
+
+    <!-- Bottom Floating Action Bar -->
+    <footer class="action-footer">
+      <button id="micButton" class="mic-button idle" aria-label="Start Conversation">
+        <div class="mic-icon-wrapper">
+          <svg id="micIcon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+            <line x1="12" y1="19" x2="12" y2="22"></line>
+          </svg>
+          <svg id="stopIcon" viewBox="0 0 24 24" width="28" height="28" fill="currentColor" style="display: none;">
+            <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+          </svg>
+        </div>
+        <span id="micButtonLabel" class="mic-label">Start Listening</span>
+      </button>
+
+      <div class="footer-tip">
+        <span id="feedbackProtectionNotice" class="protection-notice active">
+          🛡️ Echo Shield Active (Mic ducks during speech playback)
+        </span>
+      </div>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
