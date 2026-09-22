@@ -6,8 +6,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 const ELEVEN_API_KEY = process.env.ELEVENLABS_API_KEY;
-const DEFAULT_VOICE_EN = process.env.ELEVENLABS_VOICE_ID_EN || '21m00Tcm4TlvDq8ikWAM';
-const DEFAULT_VOICE_ES = process.env.ELEVENLABS_VOICE_ID_ES || 'pNInz6obpgDQGcFmaJgB';
+const DEFAULT_VOICE_EN = process.env.ELEVENLABS_VOICE_ID_EN || 'JBFqnCBsd6RMkjVDRZzb'; // George
+const DEFAULT_VOICE_ES = process.env.ELEVENLABS_VOICE_ID_ES || 'EXAVITQu4vr4xnSDxMaL'; // Bella (Multilingual)
 
 /**
  * Synthesizes speech using ElevenLabs Flash v2.5

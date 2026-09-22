@@ -36,8 +36,8 @@ Phase 1 establishes the end-to-end streaming audio and translation architecture 
 | Service | Target Role | Current Status | Notes |
 | :--- | :--- | :--- | :--- |
 | **AssemblyAI v3** | Real-time Streaming STT | **Operational (Verified)** | Handshake and streaming token authorization succeeded with `universal-3-5-pro`. |
-| **Google Gemini** | Slang Translation & Auto-detect | **Action Required (Credits)** | Active model targets `gemini-3.6-flash`. Key returned `402 Payment Required` (prepayment credit depleted on AI Studio project). A fresh/unbilled AI Studio key resolves this immediately. |
-| **ElevenLabs** | Spoken Voice Output (TTS) | **Action Required (Tier / Voice)** | Key valid, but returned `402 Paid plan required` for library voice `21m00Tcm4TlvDq8ikWAM`. Browser Web Speech Synthesis fallback engages automatically. |
+| **Google Gemini** | Slang Translation & Auto-detect | **Operational (Verified)** | Updated to active Rabbita AI key with `gemini-3.5-flash`. Successfully translated Mexican and Argentinian slang. |
+| **ElevenLabs** | Spoken Voice Output (TTS) | **Operational (Verified)** | Configured to verified active voices: **George (`JBFqnCBsd6RMkjVDRZzb`)** for English and **Bella (`EXAVITQu4vr4xnSDxMaL`)** for Multilingual Spanish with `eleven_flash_v2_5`. Audio generation confirmed. |
 
 ---
 
