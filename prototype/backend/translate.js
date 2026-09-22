@@ -14,8 +14,8 @@ if (!apiKey) {
 
 const genAI = new GoogleGenerativeAI(apiKey || 'missing_key');
 
-// Use gemini-3.5-flash for verified ultra-fast conversational translation
-const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+// Use gemini-3.5-flash-lite: ultra-low cost (fractions of a cent) & lowest latency
+const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 
 const REGION_GUIDELINES = {
   Mexican: 'Mexican Spanish (use natural Mexican colloquialisms when translating to Spanish: e.g., güey, chido, no manches, la neta, qué onda, órale, paro).',
