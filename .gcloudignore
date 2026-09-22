@@ -1,0 +1,17 @@
+.gcloudignore
+.git
+.gitignore
+
+# Node dependencies
+node_modules/
+prototype/backend/node_modules/
+
+# Local envs & logs
+.env
+prototype/.env
+*.log
+logs/
+
+# Docs not needed in image
+*.md
+All Imp info..txt

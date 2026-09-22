@@ -58,16 +58,34 @@
         </div>
       </div>
 
-      <div class="toggles-group">
-        <label class="toggle-switch" title="Speak translated speech aloud">
-          <input type="checkbox" id="voiceOutputToggle" checked>
-          <span class="slider"></span>
-          <span class="toggle-label">Voice Output</span>
+      <!-- Phase 2: 3-Way Output Mode Toggle -->
+      <div class="control-group">
+        <label>
+          <span class="label-icon">🎛️</span> Output Mode
         </label>
-        <label class="toggle-switch" title="Hardware Acoustic Echo Cancellation & Mic Gating">
+        <div class="mode-segmented-control" id="outputModeSelector">
+          <button type="button" class="mode-btn" data-mode="captions" id="modeCaptions">
+            💬 Captions
+          </button>
+          <button type="button" class="mode-btn active" data-mode="spoken" id="modeSpoken">
+            🗣️ Spoken (Mute Orig.)
+          </button>
+          <button type="button" class="mode-btn" data-mode="layered" id="modeLayered">
+            🎧 Layered Audio
+          </button>
+        </div>
+      </div>
+
+      <div class="toggles-group">
+        <label class="toggle-switch" title="Hardware Acoustic Echo Cancellation & Mic Ducking">
           <input type="checkbox" id="echoCancelToggle" checked>
           <span class="slider"></span>
           <span class="toggle-label">Echo Shield</span>
+        </label>
+        <label class="toggle-switch" title="Show real-time partial speech preview">
+          <input type="checkbox" id="livePreviewToggle" checked>
+          <span class="slider"></span>
+          <span class="toggle-label">Live Captions</span>
         </label>
       </div>
     </section>

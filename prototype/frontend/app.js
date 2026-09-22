@@ -10,7 +10,8 @@ const state = {
   isConnected: false,
   isAudioPlaying: false,
   echoShieldEnabled: true,
-  voiceOutputEnabled: true,
+  livePreviewEnabled: true,
+  outputMode: 'spoken', // 'captions' | 'spoken' | 'layered'
   region: 'Mexican',
   audioContext: null,
   mediaStream: null,
@@ -30,8 +31,9 @@ const statusLabel = document.getElementById('statusLabel');
 const latencyBadge = document.getElementById('latencyBadge');
 const latencyText = document.getElementById('latencyText');
 const regionSelect = document.getElementById('regionSelect');
-const voiceOutputToggle = document.getElementById('voiceOutputToggle');
+const modeButtons = document.querySelectorAll('.mode-btn');
 const echoCancelToggle = document.getElementById('echoCancelToggle');
+const livePreviewToggle = document.getElementById('livePreviewToggle');
 const conversationFeed = document.getElementById('conversationFeed');
 const emptyState = document.getElementById('emptyState');
 const liveBubble = document.getElementById('liveBubble');
@@ -98,7 +100,9 @@ function sendConfig() {
     state.websocket.send(JSON.stringify({
       type: 'config',
       region: state.region,
-      enableVoiceOutput: state.voiceOutputEnabled
+      outputMode: state.outputMode,
+      enableVoiceOutput: state.outputMode !== 'captions',
+      muteOriginal: state.outputMode === 'spoken'
     }));
   }
 }
@@ -135,9 +139,14 @@ function handleServerMessage(data) {
         latencyBadge.style.color = '#38bdf8';
       }
 
+      // Respect 3-Way toggle: skip audio if in Captions-only mode
+      if (state.outputMode === 'captions') {
+        return;
+      }
+
       if (data.audioBase64) {
         playAudioBuffer(data.audioBase64);
-      } else if (data.error && state.voiceOutputEnabled) {
+      } else if (data.error && state.outputMode !== 'captions') {
         console.warn('[Audio] Cloud TTS unavailable, using browser speech synthesis fallback.');
         speakBrowserFallback(data.targetText || '', data.targetLanguage);
       }
@@ -151,6 +160,8 @@ function handleServerMessage(data) {
 
 // Play Base64 MP3 Audio from Backend
 async function playAudioBuffer(base64Data) {
+  if (state.outputMode === 'captions') return;
+
   try {
     const ctx = getPlaybackContext();
     const binaryStr = window.atob(base64Data);
@@ -165,8 +176,9 @@ async function playAudioBuffer(base64Data) {
     source.buffer = audioBuffer;
     source.connect(ctx.destination);
 
-    // Acoustic Echo Protection Gate: Duck/mute mic during playback
-    if (state.echoShieldEnabled) {
+    // Acoustic Echo Protection Gate: Duck mic only in 'spoken' mode (mute original).
+    // In 'layered' mode, mic remains active for natural simultaneous audio.
+    if (state.echoShieldEnabled && state.outputMode === 'spoken') {
       state.isAudioPlaying = true;
     }
 
@@ -186,12 +198,12 @@ async function playAudioBuffer(base64Data) {
 
 // Browser Web Speech Synthesis Fallback (zero-cost backup)
 function speakBrowserFallback(text, lang) {
-  if (!('speechSynthesis' in window) || !text) return;
+  if (state.outputMode === 'captions' || !('speechSynthesis' in window) || !text) return;
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = lang === 'es' ? 'es-MX' : 'en-US';
   utterance.rate = 1.05;
 
-  if (state.echoShieldEnabled) {
+  if (state.echoShieldEnabled && state.outputMode === 'spoken') {
     state.isAudioPlaying = true;
   }
 
@@ -308,6 +320,7 @@ function updateMicButton(isActive) {
 }
 
 function showLivePartial(text) {
+  if (!state.livePreviewEnabled) return;
   if (emptyState) emptyState.style.display = 'none';
   liveBubble.style.display = 'flex';
   livePartialText.textContent = text;
@@ -390,9 +403,21 @@ regionSelect.addEventListener('change', (e) => {
   sendConfig();
 });
 
-voiceOutputToggle.addEventListener('change', (e) => {
-  state.voiceOutputEnabled = e.target.checked;
-  sendConfig();
+// Phase 2: 3-Way Mode Segmented Control
+modeButtons.forEach(btn => {
+  btn.addEventListener('click', () => {
+    modeButtons.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.outputMode = btn.dataset.mode;
+    sendConfig();
+  });
+});
+
+livePreviewToggle.addEventListener('change', (e) => {
+  state.livePreviewEnabled = e.target.checked;
+  if (!state.livePreviewEnabled) {
+    hideLivePartial();
+  }
 });
 
 echoCancelToggle.addEventListener('change', (e) => {

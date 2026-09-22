@@ -1,0 +1,19 @@
+{
+  "hosting": {
+    "public": "prototype/frontend",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "run": {
+          "serviceId": "duet-translator",
+          "region": "us-central1"
+        }
+      }
+    ]
+  }
+}
