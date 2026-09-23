@@ -409,6 +409,23 @@ body {
 .toggle-row input:checked + .toggle-track { background: var(--blue); }
 .toggle-row input:checked + .toggle-track::before { transform: translateX(12px); }
 .engine-tag { font-weight: 500; }
+.test-phrase-btn {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-family: var(--font);
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.test-phrase-btn:hover {
+  background: var(--blue-dim);
+  border-color: var(--blue);
+  color: #fff;
+}
 
 /* ─── Debug Panel ───────────────────────────────── */
 .debug-details {

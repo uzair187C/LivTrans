@@ -10,7 +10,6 @@ import { translateWithSlang } from './translate.js';
 import { synthesizeSpeech } from './tts_client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Load environment variables
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
@@ -33,7 +32,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Create WebSocket server attached to HTTP server
+// WebSocket server attached to HTTP server
 const wss = new WebSocketServer({ server, path: '/ws/live' });
 
 console.log(`[Server] Initializing Live Translation Service on port ${PORT}...`);
@@ -50,6 +49,75 @@ wss.on('connection', (clientWs, req) => {
 
   let aaiClient = null;
 
+  async function processTranslationPipeline(rawText) {
+    const tStartPipeline = Date.now();
+    console.log(`\n[Pipeline] Final Speech Turn: "${rawText}"`);
+
+    // 1. Immediately send final transcript to client
+    if (clientWs.readyState === WebSocket.OPEN) {
+      clientWs.send(JSON.stringify({
+        type: 'final_transcript',
+        text: rawText
+      }));
+      clientWs.send(JSON.stringify({
+        type: 'translating',
+        original: rawText
+      }));
+    }
+
+    // 2. Slang-aware translation via LLM
+    let translationResult;
+    try {
+      translationResult = await translateWithSlang(rawText, sessionConfig.region);
+      console.log(`[Pipeline] Translated (${translationResult.detectedLanguage} -> ${translationResult.targetLanguage}): "${translationResult.translatedText}" [LLM Latency: ${translationResult.latencyMs}ms]`);
+
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify({
+          type: 'translation',
+          original: rawText,
+          translated: translationResult.translatedText,
+          detectedLanguage: translationResult.detectedLanguage,
+          targetLanguage: translationResult.targetLanguage,
+          llmLatencyMs: translationResult.latencyMs
+        }));
+      }
+    } catch (transErr) {
+      console.error('[Pipeline] Translation failed:', transErr.message);
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify({
+          type: 'error',
+          source: 'translation',
+          message: transErr.message
+        }));
+      }
+      return;
+    }
+
+    // 3. Spoken Voice Output via ElevenLabs (if enabled)
+    if (sessionConfig.enableVoiceOutput && translationResult.translatedText) {
+      try {
+        const ttsResult = await synthesizeSpeech(translationResult.translatedText, translationResult.targetLanguage);
+        const totalPipelineMs = Date.now() - tStartPipeline;
+
+        console.log(`[Pipeline] TTS Audio Ready: ${ttsResult.audioBase64 ? 'OK' : 'Fallback required'} [TTS Latency: ${ttsResult.latencyMs}ms | Total Pipeline: ${totalPipelineMs}ms]`);
+
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(JSON.stringify({
+            type: 'audio',
+            audioBase64: ttsResult.audioBase64,
+            format: ttsResult.format,
+            targetLanguage: translationResult.targetLanguage,
+            ttsLatencyMs: ttsResult.latencyMs,
+            totalLatencyMs: totalPipelineMs,
+            error: ttsResult.error
+          }));
+        }
+      } catch (ttsErr) {
+        console.error('[Pipeline] TTS error:', ttsErr.message);
+      }
+    }
+  }
+
   try {
     aaiClient = new AssemblyAIStreamingClient(ASSEMBLYAI_API_KEY, 16000);
     aaiClient.connect();
@@ -60,6 +128,13 @@ wss.on('connection', (clientWs, req) => {
         status: 'ready',
         message: 'Speech recognition engine ready'
       }));
+    });
+
+    aaiClient.on('speech_started', () => {
+      console.log('[Pipeline] Speech activity detected');
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify({ type: 'speech_started' }));
+      }
     });
 
     aaiClient.on('partial', (data) => {
@@ -73,68 +148,8 @@ wss.on('connection', (clientWs, req) => {
     });
 
     aaiClient.on('final', async (data) => {
-      const tStartPipeline = Date.now();
-      const rawText = data.text;
-      console.log(`\n[Pipeline] Final Speech Turn: "${rawText}"`);
-
-      // 1. Immediately send final transcript to client
-      if (clientWs.readyState === WebSocket.OPEN) {
-        clientWs.send(JSON.stringify({
-          type: 'final_transcript',
-          text: rawText
-        }));
-      }
-
-      // 2. Slang-aware translation via LLM
-      let translationResult;
-      try {
-        translationResult = await translateWithSlang(rawText, sessionConfig.region);
-        console.log(`[Pipeline] Translated (${translationResult.detectedLanguage} -> ${translationResult.targetLanguage}): "${translationResult.translatedText}" [LLM Latency: ${translationResult.latencyMs}ms]`);
-
-        if (clientWs.readyState === WebSocket.OPEN) {
-          clientWs.send(JSON.stringify({
-            type: 'translation',
-            original: rawText,
-            translated: translationResult.translatedText,
-            detectedLanguage: translationResult.detectedLanguage,
-            targetLanguage: translationResult.targetLanguage,
-            llmLatencyMs: translationResult.latencyMs
-          }));
-        }
-      } catch (transErr) {
-        console.error('[Pipeline] Translation failed:', transErr.message);
-        if (clientWs.readyState === WebSocket.OPEN) {
-          clientWs.send(JSON.stringify({
-            type: 'error',
-            source: 'translation',
-            message: transErr.message
-          }));
-        }
-        return;
-      }
-
-      // 3. Spoken Voice Output via ElevenLabs (if enabled)
-      if (sessionConfig.enableVoiceOutput && translationResult.translatedText) {
-        try {
-          const ttsResult = await synthesizeSpeech(translationResult.translatedText, translationResult.targetLanguage);
-          const totalPipelineMs = Date.now() - tStartPipeline;
-
-          console.log(`[Pipeline] TTS Audio Ready: ${ttsResult.audioBase64 ? 'OK' : 'Fallback required'} [TTS Latency: ${ttsResult.latencyMs}ms | Total Pipeline: ${totalPipelineMs}ms]`);
-
-          if (clientWs.readyState === WebSocket.OPEN) {
-            clientWs.send(JSON.stringify({
-              type: 'audio',
-              audioBase64: ttsResult.audioBase64,
-              format: ttsResult.format,
-              targetLanguage: translationResult.targetLanguage,
-              ttsLatencyMs: ttsResult.latencyMs,
-              totalLatencyMs: totalPipelineMs,
-              error: ttsResult.error
-            }));
-          }
-        } catch (ttsErr) {
-          console.error('[Pipeline] TTS error:', ttsErr.message);
-        }
+      if (data.text && data.text.trim().length > 0) {
+        await processTranslationPipeline(data.text);
       }
     });
 
@@ -160,9 +175,18 @@ wss.on('connection', (clientWs, req) => {
     // If binary data, it's raw 16kHz PCM audio from microphone
     if (isBinary) {
       audioPacketsReceived++;
+
       if (audioPacketsReceived === 1 || audioPacketsReceived % 50 === 0) {
-        console.log(`[Audio Streaming] Received packet #${audioPacketsReceived} (${message.length || message.byteLength} bytes) from client`);
+        // Compute peak amplitude to verify whether audio contains real speech vs silence
+        let peakSample = 0;
+        const buf = Buffer.isBuffer(message) ? message : Buffer.from(message);
+        for (let i = 0; i < buf.length - 1; i += 2) {
+          const s = Math.abs(buf.readInt16LE(i));
+          if (s > peakSample) peakSample = s;
+        }
+        console.log(`[Audio Streaming] Packet #${audioPacketsReceived} (${buf.length}B, PeakAmp: ${peakSample})`);
       }
+
       if (aaiClient) {
         aaiClient.sendAudio(message);
       }
@@ -172,12 +196,21 @@ wss.on('connection', (clientWs, req) => {
     // Text JSON messages for control commands
     try {
       const data = JSON.parse(message.toString());
+
       if (data.type === 'config') {
         if (data.region) sessionConfig.region = data.region;
         if (data.enableVoiceOutput !== undefined) sessionConfig.enableVoiceOutput = data.enableVoiceOutput;
         if (data.muteOriginal !== undefined) sessionConfig.muteOriginal = data.muteOriginal;
         console.log(`[Session Config Updated]`, sessionConfig);
         clientWs.send(JSON.stringify({ type: 'config_ack', config: sessionConfig }));
+      } else if (data.type === 'finalize_turn') {
+        console.log('[Server] Client requested turn finalization');
+        if (aaiClient) {
+          aaiClient.forceFinalize();
+        }
+      } else if (data.type === 'simulate_turn') {
+        console.log(`[Server] Client requested simulation: "${data.text}"`);
+        processTranslationPipeline(data.text || 'Hey bro, where are you going tonight?');
       }
     } catch (e) {
       console.error('[Server] Malformed client message:', e.message);
@@ -185,9 +218,10 @@ wss.on('connection', (clientWs, req) => {
   });
 
   clientWs.on('close', () => {
-    console.log(`[WebSocket] Client disconnected.`);
+    console.log(`[WebSocket] Client disconnected. Total packets: ${audioPacketsReceived}`);
     if (aaiClient) {
       aaiClient.close();
+      aaiClient = null;
     }
   });
 
@@ -195,6 +229,7 @@ wss.on('connection', (clientWs, req) => {
     console.error('[WebSocket] Client error:', err.message);
     if (aaiClient) {
       aaiClient.close();
+      aaiClient = null;
     }
   });
 });

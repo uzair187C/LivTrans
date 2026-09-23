@@ -1,11 +1,7 @@
 /**
- * Duet — Real-Time Voice Translation Client Engine
- * Complete bulletproof implementation:
- * - Dual Web Audio pipeline (AudioWorklet + ScriptProcessor fallback)
- * - Anti-pruning destination graph (prevents browser from muting/pausing capture)
- * - 16kHz PCM16 hardware downsampler
- * - 60 FPS pitch-responsive frequency canvas visualizer
- * - Real-time on-screen telemetry & diagnostics
+ * Duet — Real-Time Voice Translation Client Engine (v3)
+ * Bulletproof audio capture, live partial transcription, auto-finalization,
+ * and seamless fallback execution.
  */
 
 // Application State
@@ -39,6 +35,14 @@ const REGION_FLAGS = {
   Neutral: '🌐'
 };
 
+const TEST_PHRASES = [
+  'Hey bro, where are you going tonight? Do you want to grab some tacos?',
+  'Honestly that concert last night was totally lit, I had so much fun!',
+  'No way dude, what a crazy mess happened over there.',
+  'Can you help me out with this real quick my friend?'
+];
+let testPhraseIdx = 0;
+
 // DOM References Cache
 let dom = {};
 
@@ -64,7 +68,8 @@ function initDOM() {
     micStatusRow: document.getElementById('micStatusRow'),
     micLiveDot: document.getElementById('micLiveDot'),
     micStatusText: document.getElementById('micStatusText'),
-    debugPanel: document.getElementById('debugPanel')
+    debugPanel: document.getElementById('debugPanel'),
+    testPhraseBtn: document.getElementById('testPhraseBtn')
   };
 }
 
@@ -82,7 +87,6 @@ function log(msg, type = 'info') {
     dom.debugPanel.appendChild(el);
     dom.debugPanel.scrollTop = dom.debugPanel.scrollHeight;
 
-    // Cap at 80 entries
     while (dom.debugPanel.children.length > 80) {
       dom.debugPanel.removeChild(dom.debugPanel.firstChild);
     }
@@ -133,7 +137,7 @@ function initWebSocket() {
       state.reconnectTimer = setTimeout(initWebSocket, 3000);
     };
 
-    state.websocket.onerror = (err) => {
+    state.websocket.onerror = () => {
       log('WebSocket network error occurred', 'err');
       updateStatus('error', 'Network Error');
     };
@@ -170,6 +174,11 @@ function handleServerPayload(data) {
       log('Config acknowledged by server', 'ok');
       break;
 
+    case 'speech_started':
+      log('Speech activity detected by AssemblyAI 🗣️', 'ok');
+      renderLivePartial('Hearing speech…', false);
+      break;
+
     case 'partial_transcript':
       if (data.text) {
         renderLivePartial(data.text, false);
@@ -181,6 +190,12 @@ function handleServerPayload(data) {
         renderLivePartial(data.text, true);
         log(`Final transcript: "${data.text}"`, 'ok');
       }
+      break;
+
+    case 'translating':
+      if (dom.liveBubble) dom.liveBubble.style.display = 'block';
+      if (dom.liveStatusLabel) dom.liveStatusLabel.textContent = 'Translating with Gemini…';
+      if (dom.livePartialText && data.original) dom.livePartialText.textContent = data.original;
       break;
 
     case 'translation':
@@ -230,26 +245,32 @@ async function startRecording() {
   log('Starting audio recording...', 'info');
 
   try {
-    // 1. Ensure WebSocket is connected
     if (!state.websocket || state.websocket.readyState !== WebSocket.OPEN) {
       log('WebSocket not connected. Re-initiating connection...', 'warn');
       initWebSocket();
     }
 
-    // 2. Initialize AudioContext on user interaction
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (!AudioCtx) {
       throw new Error('Web Audio API is not supported in this browser.');
     }
 
-    state.audioContext = new AudioCtx();
+    // Attempt to request native 16kHz context for optimal STT accuracy
+    try {
+      state.audioContext = new AudioCtx({ sampleRate: 16000 });
+    } catch (e) {
+      state.audioContext = new AudioCtx();
+    }
+
     if (state.audioContext.state === 'suspended') {
       await state.audioContext.resume();
     }
 
-    log(`AudioContext created (SampleRate: ${state.audioContext.sampleRate}Hz, State: ${state.audioContext.state})`, 'ok');
+    const inRate = state.audioContext.sampleRate;
+    const outRate = 16000;
+    log(`AudioContext active: ${inRate}Hz (State: ${state.audioContext.state})`, 'ok');
 
-    // 3. Request Microphone Access
+    // Request Microphone Access
     const constraints = {
       audio: {
         channelCount: { ideal: 1 },
@@ -262,31 +283,27 @@ async function startRecording() {
     try {
       state.mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
     } catch (constraintErr) {
-      log(`Strict audio constraints failed (${constraintErr.message}), falling back to {audio: true}`, 'warn');
+      log(`Microphone constraints fallback to basic audio: ${constraintErr.message}`, 'warn');
       state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     }
 
     log('Microphone access granted ✓', 'ok');
 
     const source = state.audioContext.createMediaStreamSource(state.mediaStream);
-    const inRate = state.audioContext.sampleRate;
-    const outRate = 16000;
 
-    // 4. Setup AnalyserNode for Pitch & Volume Visualizer
+    // Setup AnalyserNode for Visualizer
     state.analyser = state.audioContext.createAnalyser();
-    state.analyser.fftSize = 128; // 64 frequency bins
+    state.analyser.fftSize = 128;
     state.analyser.smoothingTimeConstant = 0.7;
     source.connect(state.analyser);
 
-    // Start 60fps Visualizer animation
     startVisualizerLoop();
 
-    // 5. Silent Gain Node (0 gain prevents audio feedback while keeping audio graph active)
+    // Gain node: non-zero inaudible gain keeps WebKit & Blink audio rendering pipelines actively pulling frames
     state.gainNode = state.audioContext.createGain();
-    state.gainNode.gain.value = 0.0;
+    state.gainNode.gain.value = 0.0001; // -80dB (inaudible) prevents pruning
     state.gainNode.connect(state.audioContext.destination);
 
-    // 6. Audio Processing Node: Try AudioWorklet first, then ScriptProcessor
     let workletReady = false;
 
     if (state.audioContext.audioWorklet) {
@@ -299,12 +316,17 @@ async function startRecording() {
               this.offset = 0;
             }
 
-            process(inputs) {
+            process(inputs, outputs) {
               const input = inputs[0];
+              const output = outputs[0];
+
               if (input && input[0]) {
-                const samples = input[0];
-                for (let i = 0; i < samples.length; i++) {
-                  this.buffer[this.offset++] = samples[i];
+                const channel = input[0];
+                if (output && output[0]) {
+                  output[0].set(channel);
+                }
+                for (let i = 0; i < channel.length; i++) {
+                  this.buffer[this.offset++] = channel[i];
                   if (this.offset >= 2048) {
                     this.port.postMessage(this.buffer.slice());
                     this.offset = 0;
@@ -327,18 +349,17 @@ async function startRecording() {
           handleIncomingSamples(e.data, inRate, outRate);
         };
 
-        // Wire into graph: source -> workletNode -> gainNode -> destination
         source.connect(state.workletNode);
         state.workletNode.connect(state.gainNode);
         workletReady = true;
-        log('AudioWorklet processor pipeline activated ✓', 'ok');
+        log('AudioWorklet pipeline connected & active ✓', 'ok');
       } catch (workletErr) {
-        log(`AudioWorklet unavailable (${workletErr.message}), falling back to ScriptProcessor`, 'warn');
+        log(`AudioWorklet fallback: ${workletErr.message}`, 'warn');
       }
     }
 
     if (!workletReady) {
-      // Fallback: ScriptProcessorNode (universal across all browsers)
+      // Universal ScriptProcessor fallback
       const bufferSize = 4096;
       state.scriptProcessor = state.audioContext.createScriptProcessor(bufferSize, 1, 1);
       state.scriptProcessor.onaudioprocess = (e) => {
@@ -348,7 +369,7 @@ async function startRecording() {
 
       source.connect(state.scriptProcessor);
       state.scriptProcessor.connect(state.gainNode);
-      log('ScriptProcessor fallback pipeline activated ✓', 'ok');
+      log('ScriptProcessor fallback pipeline active ✓', 'ok');
     }
 
     state.isListening = true;
@@ -361,7 +382,7 @@ async function startRecording() {
     if (dom.micStatusText) dom.micStatusText.textContent = 'Listening (Speak now…)';
 
   } catch (err) {
-    log(`Failed to start recording: ${err.message}`, 'err');
+    log(`Recording start error: ${err.message}`, 'err');
     alert(`Microphone error: ${err.message}\nPlease ensure microphone permission is granted.`);
     stopRecording();
   }
@@ -375,16 +396,16 @@ function handleIncomingSamples(floatSamples, inRate, outRate) {
     return;
   }
 
-  // Downsample to 16,000 Hz 16-bit PCM
-  const pcm16 = downsampleToPCM16(floatSamples, inRate, outRate);
+  // Convert/Resample to 16,000 Hz 16-bit PCM
+  const pcm16 = resampleAndConvertPCM16(floatSamples, inRate, outRate);
 
   if (state.websocket && state.websocket.readyState === WebSocket.OPEN) {
     state.websocket.send(pcm16.buffer);
     state.packetsSent++;
     state.bytesSent += pcm16.buffer.byteLength;
 
-    if (state.packetsSent === 1 || state.packetsSent % 30 === 0) {
-      log(`Audio streaming: ${state.packetsSent} packets (${Math.round(state.bytesSent / 1024)} KB sent)`, 'info');
+    if (state.packetsSent === 1 || state.packetsSent % 40 === 0) {
+      log(`Streaming: ${state.packetsSent} pkts (${Math.round(state.bytesSent / 1024)} KB sent)`, 'info');
       if (dom.latencyPill && state.packetsSent % 60 === 0) {
         dom.latencyPill.textContent = `${state.packetsSent} pkts`;
       }
@@ -396,6 +417,12 @@ function stopRecording() {
   state.isListening = false;
   updateMicUI(false);
   updateStatus(state.isConnected ? 'connected' : 'disconnected', state.isConnected ? 'Ready' : 'Offline');
+
+  // Notify server to immediately finalize any pending speech turn
+  if (state.websocket && state.websocket.readyState === WebSocket.OPEN) {
+    state.websocket.send(JSON.stringify({ type: 'finalize_turn' }));
+    log('Sent turn finalization signal to server', 'info');
+  }
 
   if (state.animFrameId) {
     cancelAnimationFrame(state.animFrameId);
@@ -432,14 +459,13 @@ function stopRecording() {
     state.audioContext = null;
   }
 
-  hideLivePartial();
-  log(`Recording stopped. Total packets transmitted: ${state.packetsSent}`, 'info');
+  log(`Recording stopped. Total packets: ${state.packetsSent}`, 'info');
 }
 
 // -------------------------------------------------------------
-// Linear Interpolation Downsampler (Any input rate -> 16kHz PCM16)
+// Resampler & PCM16 Converter (Smooth Fractional Resampling)
 // -------------------------------------------------------------
-function downsampleToPCM16(buffer, inRate, outRate = 16000) {
+function resampleAndConvertPCM16(buffer, inRate, outRate = 16000) {
   if (inRate === outRate) {
     const pcm = new Int16Array(buffer.length);
     for (let i = 0; i < buffer.length; i++) {
@@ -450,7 +476,7 @@ function downsampleToPCM16(buffer, inRate, outRate = 16000) {
   }
 
   const ratio = inRate / outRate;
-  const outLength = Math.round(buffer.length / ratio);
+  const outLength = Math.floor(buffer.length / ratio);
   const pcm16 = new Int16Array(outLength);
 
   for (let i = 0; i < outLength; i++) {
@@ -492,7 +518,6 @@ function startVisualizerLoop() {
   const ctx = canvas.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
 
-  // Responsive DPI sizing
   const rect = canvas.getBoundingClientRect();
   canvas.width = (rect.width || 360) * dpr;
   canvas.height = (rect.height || 48) * dpr;
@@ -525,9 +550,8 @@ function startVisualizerLoop() {
     }
     const rms = Math.sqrt(sum / bufferLength);
 
-    // Update real-time mic indicator
     if (dom.micStatusRow && dom.micStatusText) {
-      if (rms > 0.02) {
+      if (rms > 0.015) {
         dom.micStatusRow.className = 'mic-status hearing';
         dom.micStatusText.textContent = `Hearing voice (${Math.round(rms * 100)}%) 🗣️`;
       } else {
@@ -536,10 +560,8 @@ function startVisualizerLoop() {
       }
     }
 
-    // Clear Canvas
     ctx.clearRect(0, 0, w, h);
 
-    // Render 28 pitch-distributed frequency bars
     const numBars = 28;
     const barWidth = Math.max(3, (w - (numBars - 1) * 3) / numBars);
 
@@ -552,8 +574,7 @@ function startVisualizerLoop() {
       const x = i * (barWidth + 3);
       const y = (h - barHeight) / 2;
 
-      // Color shifts with pitch: Cyan (bass) -> Electric Blue (voice) -> Purple (treble)
-      const hue = 195 + (i / numBars) * 60; // 195 (cyan) to 255 (indigo)
+      const hue = 195 + (i / numBars) * 60;
       if (percent > 0.12) {
         ctx.fillStyle = `hsla(${hue}, 90%, 65%, ${0.5 + percent * 0.5})`;
       } else {
@@ -746,7 +767,7 @@ window.addEventListener('DOMContentLoaded', () => {
   initDOM();
   drawIdleBaseline();
 
-  log('Duet Translation Client initialized', 'ok');
+  log('Duet Translation Client initialized (v3)', 'ok');
   log(`Context: Secure=${window.isSecureContext}, AudioWorklet=${!!window.AudioWorklet}`, 'info');
 
   // Mic Button Click
@@ -790,6 +811,28 @@ window.addEventListener('DOMContentLoaded', () => {
     dom.echoCancelToggle.addEventListener('change', (e) => {
       state.echoProtectionEnabled = e.target.checked;
       log(`Echo Shield: ${state.echoProtectionEnabled ? 'ENABLED' : 'DISABLED'}`, 'info');
+    });
+  }
+
+  // Instant Test Sample Phrase Button
+  if (dom.testPhraseBtn) {
+    dom.testPhraseBtn.addEventListener('click', () => {
+      getPlaybackContext();
+      const phrase = TEST_PHRASES[testPhraseIdx % TEST_PHRASES.length];
+      testPhraseIdx++;
+      log(`Sending test simulation: "${phrase}"`, 'ok');
+
+      if (dom.emptyState) dom.emptyState.style.display = 'none';
+      renderLivePartial(phrase, true);
+
+      if (state.websocket && state.websocket.readyState === WebSocket.OPEN) {
+        state.websocket.send(JSON.stringify({
+          type: 'simulate_turn',
+          text: phrase
+        }));
+      } else {
+        log('WebSocket not connected. Please wait for connection.', 'err');
+      }
     });
   }
 
