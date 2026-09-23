@@ -1,7 +1,11 @@
 /**
- * Duet — Real-Time Voice Translation Client Engine (v3)
- * Bulletproof audio capture, live partial transcription, auto-finalization,
- * and seamless fallback execution.
+ * Duet — Real-Time Voice Translation Client Engine (v4)
+ * Architecture:
+ * - Native hardware rate AudioContext (eliminates Chrome MediaStream silent zero bug)
+ * - Anti-pruning audio graph with sub-audible gain anchor
+ * - Continuous fractional resampler (native rate -> 16,000 Hz 16-bit linear PCM)
+ * - Real-time peak telemetry & 60 FPS audio visualizer
+ * - Auto-finalization on speech pause + instant test simulation
  */
 
 // Application State
@@ -10,12 +14,12 @@ const state = {
   isConnected: false,
   isAudioPlaying: false,
   echoProtectionEnabled: true,
-  outputMode: 'spoken', // 'captions' | 'spoken' | 'layered'
+  outputMode: 'spoken', // 'spoken' | 'captions' | 'layered'
   region: 'Mexican',
   audioContext: null,
   mediaStream: null,
+  dummyAudio: null,
   analyser: null,
-  workletNode: null,
   scriptProcessor: null,
   gainNode: null,
   animFrameId: null,
@@ -35,41 +39,43 @@ const REGION_FLAGS = {
   Neutral: '🌐'
 };
 
-const TEST_PHRASES = [
-  'Hey bro, where are you going tonight? Do you want to grab some tacos?',
-  'Honestly that concert last night was totally lit, I had so much fun!',
-  'No way dude, what a crazy mess happened over there.',
-  'Can you help me out with this real quick my friend?'
+const SAMPLE_PHRASES = [
+  "Hey bro, where are you going tonight? Let's grab some tacos!",
+  "Honestly that concert last night was totally lit, I had so much fun!",
+  "No way dude, what a crazy mess happened over there!",
+  "Can you help me out with this real quick my friend?"
 ];
-let testPhraseIdx = 0;
+let samplePhraseIdx = 0;
 
-// DOM References Cache
+// Cached DOM References
 let dom = {};
 
 function initDOM() {
   dom = {
-    micButton: document.getElementById('micButton'),
-    micButtonLabel: document.getElementById('micButtonLabel'),
-    micIcon: document.getElementById('micIcon'),
-    stopIcon: document.getElementById('stopIcon'),
     statusDot: document.getElementById('statusDot'),
     statusText: document.getElementById('statusText'),
-    latencyPill: document.getElementById('latencyPill'),
+    connectionPill: document.getElementById('connectionPill'),
     regionSelect: document.getElementById('regionSelect'),
     targetFlag: document.getElementById('targetFlag'),
-    modePills: document.querySelectorAll('.mode-pill'),
-    echoCancelToggle: document.getElementById('echoCancelToggle'),
+    segmentButtons: document.querySelectorAll('.segment-btn'),
     conversationFeed: document.getElementById('conversationFeed'),
     emptyState: document.getElementById('emptyState'),
+    quickSampleBtn: document.getElementById('quickSampleBtn'),
     liveBubble: document.getElementById('liveBubble'),
     liveStatusLabel: document.getElementById('liveStatusLabel'),
     livePartialText: document.getElementById('livePartialText'),
     pitchWaveCanvas: document.getElementById('pitchWaveCanvas'),
-    micStatusRow: document.getElementById('micStatusRow'),
-    micLiveDot: document.getElementById('micLiveDot'),
     micStatusText: document.getElementById('micStatusText'),
-    debugPanel: document.getElementById('debugPanel'),
-    testPhraseBtn: document.getElementById('testPhraseBtn')
+    micLiveDot: document.getElementById('micLiveDot'),
+    micButton: document.getElementById('micButton'),
+    micIcon: document.getElementById('micIcon'),
+    stopIcon: document.getElementById('stopIcon'),
+    latencyPill: document.getElementById('latencyPill'),
+    testPhraseBtn: document.getElementById('testPhraseBtn'),
+    toggleDiagBtn: document.getElementById('toggleDiagBtn'),
+    closeDiagBtn: document.getElementById('closeDiagBtn'),
+    diagModal: document.getElementById('diagModal'),
+    debugPanel: document.getElementById('debugPanel')
   };
 }
 
@@ -87,7 +93,7 @@ function log(msg, type = 'info') {
     dom.debugPanel.appendChild(el);
     dom.debugPanel.scrollTop = dom.debugPanel.scrollHeight;
 
-    while (dom.debugPanel.children.length > 80) {
+    while (dom.debugPanel.children.length > 90) {
       dom.debugPanel.removeChild(dom.debugPanel.firstChild);
     }
   }
@@ -103,8 +109,8 @@ function initWebSocket() {
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${protocol}//${window.location.host}/ws/live`;
-  log(`Connecting to WebSocket: ${wsUrl}...`, 'info');
-  updateStatus('disconnected', 'Connecting…');
+  log(`Connecting to server: ${wsUrl}`, 'info');
+  updateConnectionUI('disconnected', 'Connecting…');
 
   try {
     state.websocket = new WebSocket(wsUrl);
@@ -113,7 +119,7 @@ function initWebSocket() {
     state.websocket.onopen = () => {
       state.isConnected = true;
       log('WebSocket connected successfully ✓', 'ok');
-      updateStatus('connected', 'Ready');
+      updateConnectionUI('connected', 'Connected');
       syncConfig();
     };
 
@@ -122,14 +128,14 @@ function initWebSocket() {
         const data = JSON.parse(event.data);
         handleServerPayload(data);
       } catch (err) {
-        log(`WebSocket JSON parse error: ${err.message}`, 'err');
+        log(`Parse error: ${err.message}`, 'err');
       }
     };
 
-    state.websocket.onclose = (event) => {
+    state.websocket.onclose = () => {
       state.isConnected = false;
-      log(`WebSocket disconnected (code: ${event.code})`, 'warn');
-      updateStatus('disconnected', 'Disconnected');
+      log('WebSocket disconnected. Auto-reconnecting in 3s…', 'warn');
+      updateConnectionUI('disconnected', 'Offline');
       if (state.isListening) {
         stopRecording();
       }
@@ -138,44 +144,36 @@ function initWebSocket() {
     };
 
     state.websocket.onerror = () => {
-      log('WebSocket network error occurred', 'err');
-      updateStatus('error', 'Network Error');
+      updateConnectionUI('error', 'Error');
     };
   } catch (err) {
-    log(`WebSocket creation failed: ${err.message}`, 'err');
+    log(`WS error: ${err.message}`, 'err');
   }
 }
 
 function syncConfig() {
   if (state.websocket && state.websocket.readyState === WebSocket.OPEN) {
-    const payload = {
+    state.websocket.send(JSON.stringify({
       type: 'config',
       region: state.region,
       outputMode: state.outputMode,
       enableVoiceOutput: state.outputMode !== 'captions',
       muteOriginal: state.outputMode === 'spoken'
-    };
-    state.websocket.send(JSON.stringify(payload));
-    log(`Config synced: Region=${state.region}, Mode=${state.outputMode}`, 'info');
+    }));
   }
 }
 
 // -------------------------------------------------------------
-// Server Event Router
+// Server Event Routing
 // -------------------------------------------------------------
 function handleServerPayload(data) {
   switch (data.type) {
     case 'status':
-      log(`Server status: ${data.message || data.status}`, 'ok');
-      updateStatus('connected', 'Ready');
-      break;
-
-    case 'config_ack':
-      log('Config acknowledged by server', 'ok');
+      updateConnectionUI('connected', 'Ready');
       break;
 
     case 'speech_started':
-      log('Speech activity detected by AssemblyAI 🗣️', 'ok');
+      log('Speech detected by AssemblyAI 🗣️', 'ok');
       renderLivePartial('Hearing speech…', false);
       break;
 
@@ -188,7 +186,7 @@ function handleServerPayload(data) {
     case 'final_transcript':
       if (data.text) {
         renderLivePartial(data.text, true);
-        log(`Final transcript: "${data.text}"`, 'ok');
+        log(`Final: "${data.text}"`, 'ok');
       }
       break;
 
@@ -200,7 +198,7 @@ function handleServerPayload(data) {
 
     case 'translation':
       hideLivePartial();
-      log(`Translation received: "${data.translated}" (${data.llmLatencyMs}ms)`, 'ok');
+      log(`Translated: "${data.translated}" (${data.llmLatencyMs}ms)`, 'ok');
       appendTurnCard({
         original: data.original,
         translated: data.translated,
@@ -213,81 +211,74 @@ function handleServerPayload(data) {
     case 'audio':
       if (data.totalLatencyMs && dom.latencyPill) {
         dom.latencyPill.textContent = `${data.totalLatencyMs}ms`;
-        dom.latencyPill.style.color = '#388bfd';
       }
 
       if (state.outputMode === 'captions') return;
 
       if (data.audioBase64) {
-        log(`Playing ElevenLabs voice response (${data.ttsLatencyMs}ms TTS)...`, 'info');
+        log(`Playing ElevenLabs voice audio (${data.ttsLatencyMs}ms)…`, 'info');
         playAudioResponse(data.audioBase64);
       } else if (data.error && state.outputMode !== 'captions') {
-        log(`TTS fallback to browser speech synthesis: ${data.error}`, 'warn');
         speakBrowserTTS(data.targetText || '', data.targetLanguage);
       }
       break;
 
     case 'error':
-      log(`Server error [${data.source || 'unknown'}]: ${data.message}`, 'err');
+      log(`Server error: ${data.message}`, 'err');
       break;
-
-    default:
-      log(`Unhandled server message: ${JSON.stringify(data).substring(0, 80)}`, 'info');
   }
 }
 
 // -------------------------------------------------------------
-// Audio Capture Engine
+// Audio Capture Engine (Native Rate + Resampling)
 // -------------------------------------------------------------
 async function startRecording() {
   if (state.isListening) return;
 
-  log('Starting audio recording...', 'info');
+  log('Starting microphone capture…', 'info');
 
   try {
     if (!state.websocket || state.websocket.readyState !== WebSocket.OPEN) {
-      log('WebSocket not connected. Re-initiating connection...', 'warn');
       initWebSocket();
     }
 
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtx) {
-      throw new Error('Web Audio API is not supported in this browser.');
-    }
+    if (!AudioCtx) throw new Error('Web Audio API not supported');
 
-    // Attempt to request native 16kHz context for optimal STT accuracy
-    try {
-      state.audioContext = new AudioCtx({ sampleRate: 16000 });
-    } catch (e) {
-      state.audioContext = new AudioCtx();
-    }
-
+    // CRITICAL FIX: Use native hardware sample rate.
+    // Forcing 16000Hz on AudioContext with MediaStreamSource causes Chrome to output all zeroes!
+    state.audioContext = new AudioCtx();
     if (state.audioContext.state === 'suspended') {
       await state.audioContext.resume();
     }
 
-    const inRate = state.audioContext.sampleRate;
-    const outRate = 16000;
-    log(`AudioContext active: ${inRate}Hz (State: ${state.audioContext.state})`, 'ok');
+    const nativeRate = state.audioContext.sampleRate;
+    log(`AudioContext active: ${nativeRate}Hz (State: ${state.audioContext.state})`, 'ok');
 
-    // Request Microphone Access
-    const constraints = {
-      audio: {
-        channelCount: { ideal: 1 },
-        echoCancellation: state.echoProtectionEnabled,
-        noiseSuppression: true,
-        autoGainControl: true
-      }
-    };
-
+    // Request Microphone Stream
     try {
-      state.mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-    } catch (constraintErr) {
-      log(`Microphone constraints fallback to basic audio: ${constraintErr.message}`, 'warn');
+      state.mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: { ideal: 1 },
+          echoCancellation: state.echoProtectionEnabled,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+    } catch (e) {
+      log('Falling back to generic audio constraints', 'warn');
       state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     }
 
     log('Microphone access granted ✓', 'ok');
+
+    // Chromium Dummy Audio Trick: Forces the browser to keep microphone stream alive
+    try {
+      state.dummyAudio = document.createElement('audio');
+      state.dummyAudio.srcObject = state.mediaStream;
+      state.dummyAudio.muted = true;
+      state.dummyAudio.play().catch(() => {});
+    } catch (e) {}
 
     const source = state.audioContext.createMediaStreamSource(state.mediaStream);
 
@@ -299,129 +290,69 @@ async function startRecording() {
 
     startVisualizerLoop();
 
-    // Gain node: non-zero inaudible gain keeps WebKit & Blink audio rendering pipelines actively pulling frames
+    // Inaudible Gain Node (-80dB) keeps audio rendering graph actively pulling frames
     state.gainNode = state.audioContext.createGain();
-    state.gainNode.gain.value = 0.0001; // -80dB (inaudible) prevents pruning
+    state.gainNode.gain.value = 0.0001;
     state.gainNode.connect(state.audioContext.destination);
 
-    let workletReady = false;
+    // Universal rock-solid ScriptProcessorNode
+    const bufferSize = 4096;
+    state.scriptProcessor = state.audioContext.createScriptProcessor(bufferSize, 1, 1);
 
-    if (state.audioContext.audioWorklet) {
-      try {
-        const workletCode = `
-          class LiveCaptureProcessor extends AudioWorkletProcessor {
-            constructor() {
-              super();
-              this.buffer = new Float32Array(2048);
-              this.offset = 0;
-            }
+    state.scriptProcessor.onaudioprocess = (e) => {
+      if (!state.isListening) return;
 
-            process(inputs, outputs) {
-              const input = inputs[0];
-              const output = outputs[0];
+      const inputFloat32 = e.inputBuffer.getChannelData(0);
 
-              if (input && input[0]) {
-                const channel = input[0];
-                if (output && output[0]) {
-                  output[0].set(channel);
-                }
-                for (let i = 0; i < channel.length; i++) {
-                  this.buffer[this.offset++] = channel[i];
-                  if (this.offset >= 2048) {
-                    this.port.postMessage(this.buffer.slice());
-                    this.offset = 0;
-                  }
-                }
-              }
-              return true;
-            }
-          }
-          registerProcessor('live-capture-processor', LiveCaptureProcessor);
-        `;
-
-        const blob = new Blob([workletCode], { type: 'application/javascript' });
-        const blobUrl = URL.createObjectURL(blob);
-        await state.audioContext.audioWorklet.addModule(blobUrl);
-        URL.revokeObjectURL(blobUrl);
-
-        state.workletNode = new AudioWorkletNode(state.audioContext, 'live-capture-processor');
-        state.workletNode.port.onmessage = (e) => {
-          handleIncomingSamples(e.data, inRate, outRate);
-        };
-
-        source.connect(state.workletNode);
-        state.workletNode.connect(state.gainNode);
-        workletReady = true;
-        log('AudioWorklet pipeline connected & active ✓', 'ok');
-      } catch (workletErr) {
-        log(`AudioWorklet fallback: ${workletErr.message}`, 'warn');
+      // Measure Peak Volume to verify real voice vs digital silence
+      let peak = 0;
+      for (let i = 0; i < inputFloat32.length; i++) {
+        const val = Math.abs(inputFloat32[i]);
+        if (val > peak) peak = val;
       }
-    }
 
-    if (!workletReady) {
-      // Universal ScriptProcessor fallback
-      const bufferSize = 4096;
-      state.scriptProcessor = state.audioContext.createScriptProcessor(bufferSize, 1, 1);
-      state.scriptProcessor.onaudioprocess = (e) => {
-        const channel = e.inputBuffer.getChannelData(0);
-        handleIncomingSamples(channel, inRate, outRate);
-      };
+      // Convert float samples to 16,000Hz 16-bit linear PCM
+      const pcm16 = resampleFloatTo16kPCM(inputFloat32, nativeRate);
 
-      source.connect(state.scriptProcessor);
-      state.scriptProcessor.connect(state.gainNode);
-      log('ScriptProcessor fallback pipeline active ✓', 'ok');
-    }
+      if (state.websocket && state.websocket.readyState === WebSocket.OPEN) {
+        state.websocket.send(pcm16.buffer);
+        state.packetsSent++;
+        state.bytesSent += pcm16.buffer.byteLength;
+
+        if (state.packetsSent === 1 || state.packetsSent % 40 === 0) {
+          log(`Streaming: ${state.packetsSent} pkts (Peak: ${Math.round(peak * 100)}%)`, 'info');
+          if (dom.latencyPill) {
+            dom.latencyPill.textContent = `${state.packetsSent} pkts`;
+          }
+        }
+      }
+    };
+
+    source.connect(state.scriptProcessor);
+    state.scriptProcessor.connect(state.gainNode);
 
     state.isListening = true;
     state.packetsSent = 0;
     state.bytesSent = 0;
 
     updateMicUI(true);
-    updateStatus('listening', 'Listening…');
-    if (dom.micStatusRow) dom.micStatusRow.className = 'mic-status active';
     if (dom.micStatusText) dom.micStatusText.textContent = 'Listening (Speak now…)';
 
   } catch (err) {
-    log(`Recording start error: ${err.message}`, 'err');
-    alert(`Microphone error: ${err.message}\nPlease ensure microphone permission is granted.`);
+    log(`Capture error: ${err.message}`, 'err');
+    alert(`Microphone error: ${err.message}\nPlease check browser microphone permissions.`);
     stopRecording();
-  }
-}
-
-function handleIncomingSamples(floatSamples, inRate, outRate) {
-  if (!state.isListening) return;
-
-  // Echo Shield: Pause mic streaming during spoken audio playback
-  if (state.isAudioPlaying && state.echoProtectionEnabled && state.outputMode === 'spoken') {
-    return;
-  }
-
-  // Convert/Resample to 16,000 Hz 16-bit PCM
-  const pcm16 = resampleAndConvertPCM16(floatSamples, inRate, outRate);
-
-  if (state.websocket && state.websocket.readyState === WebSocket.OPEN) {
-    state.websocket.send(pcm16.buffer);
-    state.packetsSent++;
-    state.bytesSent += pcm16.buffer.byteLength;
-
-    if (state.packetsSent === 1 || state.packetsSent % 40 === 0) {
-      log(`Streaming: ${state.packetsSent} pkts (${Math.round(state.bytesSent / 1024)} KB sent)`, 'info');
-      if (dom.latencyPill && state.packetsSent % 60 === 0) {
-        dom.latencyPill.textContent = `${state.packetsSent} pkts`;
-      }
-    }
   }
 }
 
 function stopRecording() {
   state.isListening = false;
   updateMicUI(false);
-  updateStatus(state.isConnected ? 'connected' : 'disconnected', state.isConnected ? 'Ready' : 'Offline');
 
-  // Notify server to immediately finalize any pending speech turn
+  // Send turn finalization signal to server so any spoken words are translated immediately
   if (state.websocket && state.websocket.readyState === WebSocket.OPEN) {
     state.websocket.send(JSON.stringify({ type: 'finalize_turn' }));
-    log('Sent turn finalization signal to server', 'info');
+    log('Sent turn finalization signal', 'info');
   }
 
   if (state.animFrameId) {
@@ -430,14 +361,9 @@ function stopRecording() {
   }
   drawIdleBaseline();
 
-  if (dom.micStatusRow) dom.micStatusRow.className = 'mic-status';
-  if (dom.micStatusText) dom.micStatusText.textContent = 'Tap Start to begin';
+  if (dom.micStatusText) dom.micStatusText.textContent = 'Tap mic to speak';
 
-  // Disconnect audio nodes
-  if (state.workletNode) {
-    try { state.workletNode.disconnect(); } catch (e) {}
-    state.workletNode = null;
-  }
+  // Disconnect audio graph cleanly
   if (state.scriptProcessor) {
     try { state.scriptProcessor.disconnect(); } catch (e) {}
     state.scriptProcessor = null;
@@ -450,6 +376,10 @@ function stopRecording() {
     try { state.analyser.disconnect(); } catch (e) {}
     state.analyser = null;
   }
+  if (state.dummyAudio) {
+    try { state.dummyAudio.pause(); state.dummyAudio.srcObject = null; } catch (e) {}
+    state.dummyAudio = null;
+  }
   if (state.mediaStream) {
     state.mediaStream.getTracks().forEach(track => track.stop());
     state.mediaStream = null;
@@ -459,40 +389,40 @@ function stopRecording() {
     state.audioContext = null;
   }
 
-  log(`Recording stopped. Total packets: ${state.packetsSent}`, 'info');
+  log(`Capture stopped. Total frames: ${state.packetsSent}`, 'info');
 }
 
 // -------------------------------------------------------------
-// Resampler & PCM16 Converter (Smooth Fractional Resampling)
+// Fractional Resampler (Native Hardware Rate -> 16,000 Hz PCM16)
 // -------------------------------------------------------------
-function resampleAndConvertPCM16(buffer, inRate, outRate = 16000) {
-  if (inRate === outRate) {
-    const pcm = new Int16Array(buffer.length);
-    for (let i = 0; i < buffer.length; i++) {
-      const s = Math.max(-1, Math.min(1, buffer[i]));
+function resampleFloatTo16kPCM(inputFloat32, inRate) {
+  if (inRate === 16000) {
+    const pcm = new Int16Array(inputFloat32.length);
+    for (let i = 0; i < inputFloat32.length; i++) {
+      const s = Math.max(-1, Math.min(1, inputFloat32[i]));
       pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
     }
     return pcm;
   }
 
-  const ratio = inRate / outRate;
-  const outLength = Math.floor(buffer.length / ratio);
+  const ratio = inRate / 16000;
+  const outLength = Math.floor(inputFloat32.length / ratio);
   const pcm16 = new Int16Array(outLength);
 
   for (let i = 0; i < outLength; i++) {
     const srcIndex = i * ratio;
     const i1 = Math.floor(srcIndex);
-    const i2 = Math.min(i1 + 1, buffer.length - 1);
+    const i2 = Math.min(i1 + 1, inputFloat32.length - 1);
     const frac = srcIndex - i1;
-    const sample = buffer[i1] * (1 - frac) + buffer[i2] * frac;
-    const s = Math.max(-1, Math.min(1, sample));
-    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    const sample = inputFloat32[i1] * (1 - frac) + inputFloat32[i2] * frac;
+    const clamped = Math.max(-1, Math.min(1, sample));
+    pcm16[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7FFF;
   }
   return pcm16;
 }
 
 // -------------------------------------------------------------
-// 60 FPS Pitch-Responsive Wave Visualizer
+// 60 FPS Sound Wave Visualizer
 // -------------------------------------------------------------
 function drawIdleBaseline() {
   if (!dom.pitchWaveCanvas) return;
@@ -506,7 +436,7 @@ function drawIdleBaseline() {
   ctx.beginPath();
   ctx.moveTo(0, h / 2);
   ctx.lineTo(w, h / 2);
-  ctx.strokeStyle = 'rgba(240, 246, 252, 0.12)';
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
   ctx.lineWidth = 1.5;
   ctx.stroke();
 }
@@ -519,8 +449,8 @@ function startVisualizerLoop() {
   const dpr = window.devicePixelRatio || 1;
 
   const rect = canvas.getBoundingClientRect();
-  canvas.width = (rect.width || 360) * dpr;
-  canvas.height = (rect.height || 48) * dpr;
+  canvas.width = (rect.width || 340) * dpr;
+  canvas.height = (rect.height || 36) * dpr;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.scale(dpr, dpr);
 
@@ -542,7 +472,7 @@ function startVisualizerLoop() {
     state.analyser.getByteFrequencyData(freqData);
     state.analyser.getByteTimeDomainData(timeData);
 
-    // Calculate RMS volume
+    // RMS Volume
     let sum = 0;
     for (let i = 0; i < bufferLength; i++) {
       const v = (timeData[i] - 128) / 128;
@@ -550,19 +480,20 @@ function startVisualizerLoop() {
     }
     const rms = Math.sqrt(sum / bufferLength);
 
-    if (dom.micStatusRow && dom.micStatusText) {
+    if (dom.micStatusText && dom.micLiveDot) {
+      const parent = dom.micStatusText.parentElement;
       if (rms > 0.015) {
-        dom.micStatusRow.className = 'mic-status hearing';
+        if (parent) parent.className = 'mic-telemetry hearing';
         dom.micStatusText.textContent = `Hearing voice (${Math.round(rms * 100)}%) 🗣️`;
       } else {
-        dom.micStatusRow.className = 'mic-status active';
+        if (parent) parent.className = 'mic-telemetry active';
         dom.micStatusText.textContent = 'Listening (Speak now…) 🎙️';
       }
     }
 
     ctx.clearRect(0, 0, w, h);
 
-    const numBars = 28;
+    const numBars = 26;
     const barWidth = Math.max(3, (w - (numBars - 1) * 3) / numBars);
 
     for (let i = 0; i < numBars; i++) {
@@ -574,11 +505,11 @@ function startVisualizerLoop() {
       const x = i * (barWidth + 3);
       const y = (h - barHeight) / 2;
 
-      const hue = 195 + (i / numBars) * 60;
+      const hue = 220 + (i / numBars) * 45;
       if (percent > 0.12) {
         ctx.fillStyle = `hsla(${hue}, 90%, 65%, ${0.5 + percent * 0.5})`;
       } else {
-        ctx.fillStyle = 'rgba(240, 246, 252, 0.12)';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
       }
 
       ctx.beginPath();
@@ -637,7 +568,7 @@ async function playAudioResponse(base64Data) {
 
     source.start(0);
   } catch (err) {
-    log(`Audio playback error: ${err.message}`, 'err');
+    log(`Playback error: ${err.message}`, 'err');
     state.isAudioPlaying = false;
   }
 }
@@ -694,32 +625,32 @@ function appendTurnCard({ original, translated, detectedLang, targetLang, latenc
   const isSpanish = detectedLang === 'es';
   const flagSrc = isSpanish ? (REGION_FLAGS[state.region] || '🇲🇽') : '🇺🇸';
   const flagDst = isSpanish ? '🇺🇸' : (REGION_FLAGS[state.region] || '🇲🇽');
-  const accentClass = isSpanish ? '' : 'es-target';
+  const accentClass = isSpanish ? '' : 'es-accent';
 
   const card = document.createElement('div');
-  card.className = 'turn-card';
+  card.className = 'turn-bubble';
   card.innerHTML = `
     <div class="turn-meta">
-      <span class="turn-badge ${detectedLang}">
+      <span class="turn-direction ${detectedLang}">
         ${flagSrc} ${detectedLang.toUpperCase()} → ${flagDst} ${targetLang.toUpperCase()}
       </span>
-      <span class="turn-time">${latencyMs ? `${latencyMs}ms` : ''}</span>
+      <span class="turn-latency">${latencyMs ? `${latencyMs}ms` : ''}</span>
     </div>
 
-    <div class="turn-original">${sanitize(original)}</div>
+    <div class="turn-source">${sanitize(original)}</div>
 
-    <div class="turn-translated ${accentClass}">
+    <div class="turn-translated-box ${accentClass}">
       <div class="turn-translated-text">${sanitize(translated)}</div>
     </div>
 
     <div class="turn-actions">
-      <button class="replay-btn" data-text="${sanitize(translated)}" data-lang="${targetLang}">
+      <button class="replay-audio-btn" data-text="${sanitize(translated)}" data-lang="${targetLang}">
         🔊 Replay
       </button>
     </div>
   `;
 
-  card.querySelector('.replay-btn').addEventListener('click', () => {
+  card.querySelector('.replay-audio-btn').addEventListener('click', () => {
     speakBrowserTTS(translated, targetLang);
   });
 
@@ -740,35 +671,52 @@ function sanitize(str) {
 // -------------------------------------------------------------
 // UI State Updates
 // -------------------------------------------------------------
-function updateStatus(dotClass, text) {
-  if (dom.statusDot) dom.statusDot.className = `status-dot ${dotClass}`;
+function updateConnectionUI(dotClass, text) {
+  if (dom.statusDot) dom.statusDot.className = `conn-dot ${dotClass}`;
   if (dom.statusText) dom.statusText.textContent = text;
 }
 
 function updateMicUI(active) {
   if (!dom.micButton) return;
   if (active) {
-    dom.micButton.className = 'mic-btn active';
-    if (dom.micButtonLabel) dom.micButtonLabel.textContent = 'Pause Conversation';
+    dom.micButton.className = 'main-record-btn active';
     if (dom.micIcon) dom.micIcon.style.display = 'none';
     if (dom.stopIcon) dom.stopIcon.style.display = 'block';
   } else {
-    dom.micButton.className = 'mic-btn idle';
-    if (dom.micButtonLabel) dom.micButtonLabel.textContent = 'Start Conversation';
+    dom.micButton.className = 'main-record-btn idle';
     if (dom.micIcon) dom.micIcon.style.display = 'block';
     if (dom.stopIcon) dom.stopIcon.style.display = 'none';
   }
 }
 
+function triggerSamplePhrase() {
+  getPlaybackContext();
+  const phrase = SAMPLE_PHRASES[samplePhraseIdx % SAMPLE_PHRASES.length];
+  samplePhraseIdx++;
+  log(`Simulating phrase: "${phrase}"`, 'ok');
+
+  if (dom.emptyState) dom.emptyState.style.display = 'none';
+  renderLivePartial(phrase, true);
+
+  if (state.websocket && state.websocket.readyState === WebSocket.OPEN) {
+    state.websocket.send(JSON.stringify({
+      type: 'simulate_turn',
+      text: phrase
+    }));
+  } else {
+    alert('Connecting to server… please try again in a moment.');
+  }
+}
+
 // -------------------------------------------------------------
-// Event Listeners & Initialization
+// Initialization & Listeners
 // -------------------------------------------------------------
 window.addEventListener('DOMContentLoaded', () => {
   initDOM();
   drawIdleBaseline();
 
-  log('Duet Translation Client initialized (v3)', 'ok');
-  log(`Context: Secure=${window.isSecureContext}, AudioWorklet=${!!window.AudioWorklet}`, 'info');
+  log('Duet Audio Engine Initialized (v4)', 'ok');
+  log(`Platform: Secure=${window.isSecureContext}, AudioCtx=${!!(window.AudioContext || window.webkitAudioContext)}`, 'info');
 
   // Mic Button Click
   if (dom.micButton) {
@@ -793,56 +741,45 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Mode Pill Buttons
-  if (dom.modePills) {
-    dom.modePills.forEach(btn => {
+  // Mode Segment Buttons
+  if (dom.segmentButtons) {
+    dom.segmentButtons.forEach(btn => {
       btn.addEventListener('click', () => {
-        dom.modePills.forEach(b => b.classList.remove('active'));
+        dom.segmentButtons.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         state.outputMode = btn.dataset.mode;
-        log(`Output mode set to: ${state.outputMode}`, 'info');
+        log(`Mode: ${state.outputMode}`, 'info');
         syncConfig();
       });
     });
   }
 
-  // Echo Protection Toggle
-  if (dom.echoCancelToggle) {
-    dom.echoCancelToggle.addEventListener('change', (e) => {
-      state.echoProtectionEnabled = e.target.checked;
-      log(`Echo Shield: ${state.echoProtectionEnabled ? 'ENABLED' : 'DISABLED'}`, 'info');
-    });
+  // Quick Sample Buttons
+  if (dom.quickSampleBtn) {
+    dom.quickSampleBtn.addEventListener('click', triggerSamplePhrase);
   }
-
-  // Instant Test Sample Phrase Button
   if (dom.testPhraseBtn) {
-    dom.testPhraseBtn.addEventListener('click', () => {
-      getPlaybackContext();
-      const phrase = TEST_PHRASES[testPhraseIdx % TEST_PHRASES.length];
-      testPhraseIdx++;
-      log(`Sending test simulation: "${phrase}"`, 'ok');
+    dom.testPhraseBtn.addEventListener('click', triggerSamplePhrase);
+  }
 
-      if (dom.emptyState) dom.emptyState.style.display = 'none';
-      renderLivePartial(phrase, true);
-
-      if (state.websocket && state.websocket.readyState === WebSocket.OPEN) {
-        state.websocket.send(JSON.stringify({
-          type: 'simulate_turn',
-          text: phrase
-        }));
-      } else {
-        log('WebSocket not connected. Please wait for connection.', 'err');
-      }
+  // Diagnostics Modal Toggle
+  if (dom.toggleDiagBtn) {
+    dom.toggleDiagBtn.addEventListener('click', () => {
+      if (dom.diagModal) dom.diagModal.style.display = 'flex';
+    });
+  }
+  if (dom.closeDiagBtn) {
+    dom.closeDiagBtn.addEventListener('click', () => {
+      if (dom.diagModal) dom.diagModal.style.display = 'none';
     });
   }
 
-  // Handle window resize for canvas DPR
+  // Canvas Resize
   window.addEventListener('resize', () => {
     if (!state.isListening) {
       drawIdleBaseline();
     }
   });
 
-  // Start WebSocket connection
   initWebSocket();
 });

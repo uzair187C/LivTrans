@@ -3,124 +3,162 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Duet — Live Voice Translation</title>
+  <title>Duet — Real-Time Voice Translation</title>
   <link rel="stylesheet" href="style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
 </head>
 <body>
-  <div class="app-shell">
+  <div class="app-viewport">
 
-    <!-- Top Navigation -->
-    <header class="top-bar">
-      <div class="top-bar-left">
-        <h1 class="brand">Duet</h1>
-        <span class="latency-badge" id="latencyPill">—</span>
+    <!-- Top Navigation Header -->
+    <header class="app-header">
+      <div class="brand-group">
+        <div class="brand-logo">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m5 8 6 6"/>
+            <path d="m4 14 6-6 2-3"/>
+            <path d="M2 5h12"/>
+            <path d="M22 22l-5-10-5 10"/>
+            <path d="M14 18h6"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-name">Duet</span>
+          <span class="brand-tag">Live Slang</span>
+        </div>
       </div>
-      <div class="top-bar-right">
-        <span class="status-dot" id="statusDot"></span>
-        <span class="status-label" id="statusText">Connecting…</span>
+
+      <div class="connection-pill" id="connectionPill">
+        <span class="conn-dot" id="statusDot"></span>
+        <span class="conn-label" id="statusText">Connecting</span>
       </div>
     </header>
 
-    <!-- Language Bar -->
-    <section class="lang-bar">
-      <div class="lang-chip">
+    <!-- Language & Dialect Selector -->
+    <section class="language-card">
+      <div class="lang-box">
         <span class="lang-flag">🇺🇸</span>
-        <span class="lang-name">English</span>
+        <span class="lang-title">English</span>
       </div>
-      <span class="lang-arrow">⇄</span>
-      <div class="lang-chip lang-chip--select">
+
+      <div class="lang-swap-btn" aria-label="Bidirectional">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m8 3 4 4-4 4"/>
+          <path d="M4 7h8"/>
+          <path d="m16 21-4-4 4-4"/>
+          <path d="M20 17H12"/>
+        </svg>
+      </div>
+
+      <div class="lang-box lang-box--select">
         <span class="lang-flag" id="targetFlag">🇲🇽</span>
-        <select id="regionSelect" class="lang-select" aria-label="Select dialect">
-          <option value="Mexican" selected>Mexican</option>
-          <option value="Argentinian">Argentine</option>
-          <option value="Colombian">Colombian</option>
-          <option value="Caribbean">Caribbean</option>
-          <option value="Spain">Spain</option>
-          <option value="Peruvian">Peruvian</option>
-          <option value="Neutral">Standard</option>
-        </select>
+        <div class="select-wrapper">
+          <select id="regionSelect" class="dialect-dropdown" aria-label="Select Spanish Dialect">
+            <option value="Mexican" selected>Mexican</option>
+            <option value="Argentinian">Argentine</option>
+            <option value="Colombian">Colombian</option>
+            <option value="Caribbean">Caribbean</option>
+            <option value="Spain">Spain</option>
+            <option value="Peruvian">Peruvian</option>
+            <option value="Neutral">Standard</option>
+          </select>
+        </div>
       </div>
     </section>
 
-    <!-- Mode Selector -->
-    <div class="mode-bar">
-      <div class="mode-pills">
-        <button class="mode-pill" data-mode="captions">📝 Captions</button>
-        <button class="mode-pill active" data-mode="spoken">🔊 Voice</button>
-        <button class="mode-pill" data-mode="layered">📝🔊 Both</button>
+    <!-- Mode Toggle: Voice vs Text vs Both -->
+    <div class="mode-container">
+      <div class="segmented-control">
+        <button type="button" class="segment-btn active" data-mode="spoken">🔊 Spoken Voice</button>
+        <button type="button" class="segment-btn" data-mode="captions">📝 Text Only</button>
+        <button type="button" class="segment-btn" data-mode="layered">📝🔊 Both</button>
       </div>
     </div>
 
-    <!-- Conversation Feed -->
-    <main class="feed" id="conversationFeed">
-      <div class="feed-empty" id="emptyState">
-        <div class="feed-empty-icon">
-          <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.8">
-            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-            <line x1="12" y1="19" x2="12" y2="22"/>
-          </svg>
+    <!-- Live Conversation Feed -->
+    <main class="conversation-feed" id="conversationFeed">
+
+      <!-- Empty State -->
+      <div class="empty-state" id="emptyState">
+        <div class="empty-illustration">
+          <div class="illustration-ring"></div>
+          <div class="illustration-icon">🎙️</div>
         </div>
-        <h3>Place device between speakers</h3>
-        <p>Speak naturally in English or Spanish. Duet detects who's talking and translates with real slang.</p>
+        <h2 class="empty-title">Speak naturally to translate</h2>
+        <p class="empty-desc">Talk in English or Spanish with authentic slang. Duet detects speech, translates instantly with Gemini, and speaks back in voice.</p>
+        <button id="quickSampleBtn" class="quick-sample-btn" type="button">
+          <span>✨ Try Sample: "What's up bro?"</span>
+        </button>
       </div>
 
-      <!-- Live partial transcript bubble (hidden by default) -->
-      <div class="live-bubble" id="liveBubble" style="display:none;">
-        <div class="live-bubble-header">
-          <span class="live-dot"></span>
+      <!-- Live Speaking Bubble (Hidden when idle) -->
+      <div class="live-card" id="liveBubble" style="display: none;">
+        <div class="live-card-status">
+          <span class="live-pulse"></span>
           <span class="live-label" id="liveStatusLabel">Listening…</span>
         </div>
         <p class="live-text" id="livePartialText">…</p>
       </div>
+
     </main>
 
-    <!-- Bottom Action Bar -->
-    <footer class="action-bar">
-      <!-- Visualizer -->
-      <div class="viz-wrapper">
-        <div class="mic-status" id="micStatusRow">
-          <span class="mic-dot" id="micLiveDot"></span>
-          <span class="mic-label" id="micStatusText">Tap Start to begin</span>
+    <!-- Bottom Controls & Microphone Dock -->
+    <footer class="bottom-dock">
+
+      <!-- Dynamic Voice Amplitude Waves (Visible while recording) -->
+      <div class="visualizer-bar" id="visualizerBar">
+        <div class="mic-telemetry">
+          <span class="mic-active-dot" id="micLiveDot"></span>
+          <span class="mic-active-text" id="micStatusText">Tap mic to speak</span>
         </div>
-        <canvas id="pitchWaveCanvas" class="viz-canvas" width="360" height="48"></canvas>
+        <canvas id="pitchWaveCanvas" class="audio-canvas" width="340" height="36"></canvas>
       </div>
 
-      <!-- Big Mic Button -->
-      <button id="micButton" class="mic-btn idle" aria-label="Start Conversation">
-        <span class="mic-btn-icon">
-          <svg id="micIcon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-            <line x1="12" y1="19" x2="12" y2="22"/>
-          </svg>
-          <svg id="stopIcon" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" style="display:none;">
-            <rect x="6" y="6" width="12" height="12" rx="2"/>
-          </svg>
-        </span>
-        <span id="micButtonLabel">Start Conversation</span>
-      </button>
+      <!-- Center Big Microphone Button -->
+      <div class="dock-actions">
+        <button id="testPhraseBtn" class="dock-pill-btn" type="button" title="Send a test sentence">
+          <span>🧪 Test</span>
+        </button>
 
-      <!-- Sub-controls -->
-      <div class="sub-controls">
-        <label class="toggle-row">
-          <input type="checkbox" id="echoCancelToggle" checked>
-          <span class="toggle-track"></span>
-          <span>Echo Shield</span>
-        </label>
-        <span class="sub-divider">·</span>
-        <button id="testPhraseBtn" class="test-phrase-btn" type="button" title="Send a test sentence to verify translation & voice">🧪 Test Sample</button>
+        <button id="micButton" class="main-record-btn idle" aria-label="Start Conversation">
+          <div class="mic-glow-ring"></div>
+          <div class="mic-icon-wrapper">
+            <svg id="micIcon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="22"/>
+            </svg>
+            <svg id="stopIcon" viewBox="0 0 24 24" width="24" height="24" fill="currentColor" style="display:none;">
+              <rect x="6" y="6" width="12" height="12" rx="3"/>
+            </svg>
+          </div>
+        </button>
+
+        <button id="toggleDiagBtn" class="dock-pill-btn" type="button" title="View Diagnostics">
+          <span>⚙️ Info</span>
+        </button>
       </div>
+
+      <div class="dock-footer-meta">
+        <span id="latencyPill" class="meta-pill">Ready</span>
+        <span class="meta-dot">·</span>
+        <span class="meta-tag">Gemini 3.5 Flash-Lite</span>
+        <span class="meta-dot">·</span>
+        <span class="meta-tag">ElevenLabs</span>
+      </div>
+
     </footer>
 
-    <!-- Debug Panel (visible during development) -->
-    <details class="debug-details" open>
-      <summary>🔧 Debug Console</summary>
-      <div class="debug-log" id="debugPanel"></div>
-    </details>
+    <!-- Diagnostics Modal (Hidden by default, clean slide-over) -->
+    <div class="diag-modal" id="diagModal" style="display:none;">
+      <div class="diag-header">
+        <h3>System Diagnostics</h3>
+        <button id="closeDiagBtn" class="close-diag-btn" type="button">✕</button>
+      </div>
+      <div class="diag-content" id="debugPanel"></div>
+    </div>
 
   </div>
 
