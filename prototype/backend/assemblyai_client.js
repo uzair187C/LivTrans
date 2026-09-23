@@ -116,7 +116,7 @@ export class AssemblyAIStreamingClient extends EventEmitter {
         this.ws.send(frame);
       } else {
         if (this.audioQueue.length < 50) {
-          this.audioQueue.push(frame);
+          this.audioQueue.push(Buffer.from(frame));
         }
       }
     }
