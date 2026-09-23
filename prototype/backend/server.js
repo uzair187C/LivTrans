@@ -63,6 +63,7 @@ wss.on('connection', (clientWs, req) => {
     });
 
     aaiClient.on('partial', (data) => {
+      console.log(`[Speech Live] Partial: "${data.text}"`);
       if (clientWs.readyState === WebSocket.OPEN) {
         clientWs.send(JSON.stringify({
           type: 'partial_transcript',
@@ -152,10 +153,16 @@ wss.on('connection', (clientWs, req) => {
     console.error('[Server] Error initializing AssemblyAI client:', err.message);
   }
 
+  let audioPacketsReceived = 0;
+
   // Handle incoming messages from browser client
   clientWs.on('message', (message, isBinary) => {
     // If binary data, it's raw 16kHz PCM audio from microphone
     if (isBinary) {
+      audioPacketsReceived++;
+      if (audioPacketsReceived === 1 || audioPacketsReceived % 50 === 0) {
+        console.log(`[Audio Streaming] Received packet #${audioPacketsReceived} (${message.length || message.byteLength} bytes) from client`);
+      }
       if (aaiClient) {
         aaiClient.sendAudio(message);
       }

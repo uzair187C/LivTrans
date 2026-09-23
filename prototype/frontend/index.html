@@ -83,20 +83,13 @@
     <!-- Bottom Controls & Action Bar -->
     <footer class="bottom-action-bar">
       
-      <!-- Live Audio Volume Visualizer -->
-      <div class="audio-visualizer-container" id="audioVisualizer" style="opacity: 0;">
-        <span class="visualizer-bar"></span>
-        <span class="visualizer-bar"></span>
-        <span class="visualizer-bar"></span>
-        <span class="visualizer-bar"></span>
-        <span class="visualizer-bar"></span>
-        <span class="visualizer-bar"></span>
-        <span class="visualizer-bar"></span>
-        <span class="visualizer-bar"></span>
-        <span class="visualizer-bar"></span>
-        <span class="visualizer-bar"></span>
-        <span class="visualizer-bar"></span>
-        <span class="visualizer-bar"></span>
+      <!-- Live Pitch & Frequency Audio Wave Visualizer -->
+      <div class="visualizer-wrapper">
+        <div class="mic-status-row" id="micStatusRow">
+          <span class="mic-live-dot" id="micLiveDot"></span>
+          <span class="mic-status-text" id="micStatusText">Tap Start to begin</span>
+        </div>
+        <canvas id="pitchWaveCanvas" class="pitch-wave-canvas" width="360" height="48"></canvas>
       </div>
 
       <!-- Primary Big Mic Button -->

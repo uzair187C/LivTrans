@@ -1,8 +1,10 @@
 /**
- * Duet — Live Voice Translation Client Engine
- * Robust cross-platform Web Audio capture (iOS Safari / Android Chrome / Desktop),
- * dynamic sample-rate downsampling to 16kHz PCM, real-time volume visualizer,
- * and seamless audio playback.
+ * Duet — Live Voice Translation Client Engine (v2)
+ * Features:
+ * - Dual audio capture: High-performance AudioWorklet with ScriptProcessor fallback
+ * - Hardware AnalyserNode with 60 FPS Pitch & Frequency Wave Visualizer
+ * - Real-time device sample rate downsampler (e.g. 48kHz -> 16kHz PCM16)
+ * - Acoustic Echo Cancellation protection & 3-Way Mode control
  */
 
 // Application State
@@ -15,8 +17,11 @@ const state = {
   region: 'Mexican',
   audioContext: null,
   mediaStream: null,
+  analyser: null,
+  workletNode: null,
   scriptProcessor: null,
   gainNode: null,
+  animFrameId: null,
   websocket: null
 };
 
@@ -48,8 +53,38 @@ const emptyState = document.getElementById('emptyState');
 const liveBubble = document.getElementById('liveBubble');
 const liveStatusLabel = document.getElementById('liveStatusLabel');
 const livePartialText = document.getElementById('livePartialText');
-const audioVisualizer = document.getElementById('audioVisualizer');
-const visualizerBars = document.querySelectorAll('.visualizer-bar');
+const pitchWaveCanvas = document.getElementById('pitchWaveCanvas');
+const micStatusRow = document.getElementById('micStatusRow');
+const micLiveDot = document.getElementById('micLiveDot');
+const micStatusText = document.getElementById('micStatusText');
+
+// Canvas Context for Pitch Waves
+let canvasCtx = null;
+if (pitchWaveCanvas) {
+  canvasCtx = pitchWaveCanvas.getContext('2d');
+  // High-DPI scaling
+  const dpr = window.devicePixelRatio || 1;
+  const rect = pitchWaveCanvas.getBoundingClientRect();
+  pitchWaveCanvas.width = (rect.width || 360) * dpr;
+  pitchWaveCanvas.height = (rect.height || 48) * dpr;
+  if (canvasCtx) canvasCtx.scale(dpr, dpr);
+}
+
+// Draw idle baseline on canvas
+function drawIdleCanvas() {
+  if (!canvasCtx || !pitchWaveCanvas) return;
+  const w = pitchWaveCanvas.width / (window.devicePixelRatio || 1);
+  const h = pitchWaveCanvas.height / (window.devicePixelRatio || 1);
+  canvasCtx.clearRect(0, 0, w, h);
+  
+  canvasCtx.beginPath();
+  canvasCtx.moveTo(0, h / 2);
+  canvasCtx.lineTo(w, h / 2);
+  canvasCtx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+  canvasCtx.lineWidth = 1.5;
+  canvasCtx.stroke();
+}
+drawIdleCanvas();
 
 // Playback Web Audio Context
 let playbackAudioCtx = null;
@@ -156,35 +191,32 @@ function handleServerPayload(data) {
         latencyPill.style.color = '#388bfd';
       }
 
-      // If captions mode, skip audio playback
       if (state.outputMode === 'captions') return;
 
       if (data.audioBase64) {
         streamAudioPlayback(data.audioBase64);
       } else if (data.error && state.outputMode !== 'captions') {
-        // Fallback to browser speech synthesis
         speakBrowserTTS(data.targetText || '', data.targetLanguage);
       }
       break;
 
     case 'error':
-      console.error('[Server Pipeline Error]', data);
+      console.error('[Server Error]', data);
       break;
   }
 }
 
 // -------------------------------------------------------------
-// Audio Capture & Resampling (Universal Mobile Support)
+// Audio Capture & Pitch-Responsive Sound Wave Visualizer
 // -------------------------------------------------------------
 async function startRecording() {
   try {
-    getPlaybackContext(); // Unlock audio context on user gesture
+    getPlaybackContext();
 
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     state.audioContext = new AudioCtx();
     await state.audioContext.resume();
 
-    // Constraints for clean voice audio
     state.mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -195,68 +227,189 @@ async function startRecording() {
     });
 
     const source = state.audioContext.createMediaStreamSource(state.mediaStream);
-    const inputSampleRate = state.audioContext.sampleRate;
-    const targetSampleRate = 16000;
+    const inRate = state.audioContext.sampleRate;
+    const outRate = 16000;
 
-    // Use 4096 buffer size
-    const bufferSize = 4096;
-    state.scriptProcessor = state.audioContext.createScriptProcessor(bufferSize, 1, 1);
+    // 1. Setup AnalyserNode for Pitch & Frequency Waves
+    state.analyser = state.audioContext.createAnalyser();
+    state.analyser.fftSize = 64; // 32 frequency bins
+    state.analyser.smoothingTimeConstant = 0.75;
+    source.connect(state.analyser);
 
-    // Muted GainNode to keep audio chain active on iOS without acoustic echo
-    state.gainNode = state.audioContext.createGain();
-    state.gainNode.gain.value = 0;
+    // 2. Start Visualizer Animation Loop
+    startVisualizerLoop();
 
-    state.scriptProcessor.onaudioprocess = (e) => {
-      if (!state.isListening) return;
-
-      // Echo Protection: Duck mic during spoken translation playback
-      if (state.isAudioPlaying && state.echoProtectionEnabled && state.outputMode === 'spoken') {
-        updateVisualizer(0);
-        return;
+    // 3. Audio Extraction: Try AudioWorklet first, then ScriptProcessor fallback
+    let workletSuccess = false;
+    if (state.audioContext.audioWorklet) {
+      try {
+        const workletCode = `
+          class LiveRecorderProcessor extends AudioWorkletProcessor {
+            process(inputs) {
+              const input = inputs[0];
+              if (input && input[0]) {
+                this.port.postMessage(input[0]);
+              }
+              return true;
+            }
+          }
+          registerProcessor('live-recorder-processor', LiveRecorderProcessor);
+        `;
+        const blob = new Blob([workletCode], { type: 'application/javascript' });
+        const url = URL.createObjectURL(blob);
+        await state.audioContext.audioWorklet.addModule(url);
+        
+        state.workletNode = new AudioWorkletNode(state.audioContext, 'live-recorder-processor');
+        state.workletNode.port.onmessage = (e) => {
+          handleAudioData(e.data, inRate, outRate);
+        };
+        source.connect(state.workletNode);
+        workletSuccess = true;
+        console.log('[Audio] AudioWorklet recording pipeline active.');
+      } catch (workletErr) {
+        console.warn('[Audio] AudioWorklet init failed, falling back to ScriptProcessor:', workletErr);
       }
+    }
 
-      const channelData = e.inputBuffer.getChannelData(0);
+    if (!workletSuccess) {
+      const bufferSize = 4096;
+      state.scriptProcessor = state.audioContext.createScriptProcessor(bufferSize, 1, 1);
+      
+      // Inaudible non-zero gain node (0.00001) prevents WebKit from pruning dead audio graph branches
+      state.gainNode = state.audioContext.createGain();
+      state.gainNode.gain.value = 0.00001;
 
-      // Compute volume for live visualizer
-      let sumSquares = 0;
-      for (let i = 0; i < channelData.length; i++) {
-        sumSquares += channelData[i] * channelData[i];
-      }
-      const rms = Math.sqrt(sumSquares / channelData.length);
-      updateVisualizer(rms);
+      state.scriptProcessor.onaudioprocess = (e) => {
+        const floatData = e.inputBuffer.getChannelData(0);
+        handleAudioData(floatData, inRate, outRate);
+      };
 
-      // Downsample input float32 array to 16kHz 16-bit PCM
-      const pcm16Data = downsampleToPCM16(channelData, inputSampleRate, targetSampleRate);
-
-      // Stream binary frame to server
-      if (state.websocket && state.websocket.readyState === WebSocket.OPEN) {
-        state.websocket.send(pcm16Data.buffer);
-      }
-    };
-
-    source.connect(state.scriptProcessor);
-    state.scriptProcessor.connect(state.gainNode);
-    state.gainNode.connect(state.audioContext.destination);
+      source.connect(state.scriptProcessor);
+      state.scriptProcessor.connect(state.gainNode);
+      state.gainNode.connect(state.audioContext.destination);
+      console.log('[Audio] ScriptProcessor recording pipeline active.');
+    }
 
     state.isListening = true;
     updateMicUI(true);
     updateStatus('listening', 'Listening');
-    audioVisualizer.style.opacity = '1';
+    if (micStatusRow) micStatusRow.className = 'mic-status-row active';
+    if (micStatusText) micStatusText.textContent = 'Mic active (Listening for speech...)';
 
   } catch (err) {
-    console.error('[Mic Error]', err);
-    alert(`Microphone error: ${err.message}\nPlease ensure microphone permission is granted in your browser settings.`);
+    console.error('[Recording Error]', err);
+    alert(`Microphone error: ${err.message}\nPlease ensure microphone permission is granted in browser settings.`);
     stopRecording();
   }
+}
+
+function handleAudioData(channelData, inRate, outRate) {
+  if (!state.isListening) return;
+
+  // Echo Shield: Pause mic frames during spoken translation playback
+  if (state.isAudioPlaying && state.echoProtectionEnabled && state.outputMode === 'spoken') {
+    return;
+  }
+
+  // Downsample to 16,000 Hz 16-bit PCM
+  const pcm16 = downsampleToPCM16(channelData, inRate, outRate);
+
+  // Send binary audio frame over WebSocket
+  if (state.websocket && state.websocket.readyState === WebSocket.OPEN) {
+    state.websocket.send(pcm16.buffer);
+  }
+}
+
+// Real-time Pitch & Frequency Wave Visualizer Loop (60 FPS)
+function startVisualizerLoop() {
+  if (!state.analyser || !canvasCtx || !pitchWaveCanvas) return;
+
+  const bufferLength = state.analyser.frequencyBinCount;
+  const freqData = new Uint8Array(bufferLength);
+  const timeData = new Uint8Array(bufferLength);
+
+  const w = pitchWaveCanvas.width / (window.devicePixelRatio || 1);
+  const h = pitchWaveCanvas.height / (window.devicePixelRatio || 1);
+
+  function draw() {
+    if (!state.isListening) {
+      drawIdleCanvas();
+      return;
+    }
+
+    state.animFrameId = requestAnimationFrame(draw);
+
+    state.analyser.getByteFrequencyData(freqData);
+    state.analyser.getByteTimeDomainData(timeData);
+
+    // Compute average amplitude for status badge
+    let sum = 0;
+    for (let i = 0; i < bufferLength; i++) {
+      sum += freqData[i];
+    }
+    const avgVolume = sum / bufferLength;
+
+    if (micStatusRow && micStatusText) {
+      if (avgVolume > 12) {
+        micStatusRow.className = 'mic-status-row hearing';
+        micStatusText.textContent = `Hearing speech (Vol: ${Math.round(avgVolume)}%) 🗣️`;
+      } else {
+        micStatusRow.className = 'mic-status-row active';
+        micStatusText.textContent = 'Listening (Speak in EN or ES...)';
+      }
+    }
+
+    // Clear Canvas
+    canvasCtx.clearRect(0, 0, w, h);
+
+    // Draw Frequency Bars (Responsive to pitch: low pitch = left, high pitch = right)
+    const numBars = 24;
+    const barWidth = Math.max(3, (w - (numBars - 1) * 3) / numBars);
+    
+    for (let i = 0; i < numBars; i++) {
+      const freqIndex = Math.min(bufferLength - 1, Math.floor(i * (bufferLength / numBars)));
+      const value = freqData[freqIndex] || 0;
+      const percent = value / 255;
+      const barHeight = Math.max(3, percent * (h - 6));
+
+      const x = i * (barWidth + 3);
+      const y = (h - barHeight) / 2;
+
+      // Color shifts with pitch: warm amber for bass to vibrant blue/cyan for treble
+      const hue = 210 + (i / numBars) * 35; // 210 (blue) -> 245 (indigo/violet)
+      canvasCtx.fillStyle = percent > 0.15 
+        ? `hsla(${hue}, 95%, 62%, ${0.5 + percent * 0.5})` 
+        : 'rgba(255, 255, 255, 0.12)';
+
+      canvasCtx.beginPath();
+      canvasCtx.roundRect(x, y, barWidth, barHeight, 2);
+      canvasCtx.fill();
+    }
+  }
+
+  draw();
 }
 
 function stopRecording() {
   state.isListening = false;
   updateMicUI(false);
   updateStatus(state.isConnected ? 'connected' : 'disconnected', state.isConnected ? 'Ready' : 'Offline');
-  audioVisualizer.style.opacity = '0';
-  updateVisualizer(0);
 
+  if (state.animFrameId) {
+    cancelAnimationFrame(state.animFrameId);
+    state.animFrameId = null;
+  }
+  drawIdleCanvas();
+
+  if (micStatusRow && micStatusText) {
+    micStatusRow.className = 'mic-status-row';
+    micStatusText.textContent = 'Tap Start to begin';
+  }
+
+  if (state.workletNode) {
+    state.workletNode.disconnect();
+    state.workletNode = null;
+  }
   if (state.scriptProcessor) {
     state.scriptProcessor.disconnect();
     state.scriptProcessor = null;
@@ -264,6 +417,10 @@ function stopRecording() {
   if (state.gainNode) {
     state.gainNode.disconnect();
     state.gainNode = null;
+  }
+  if (state.analyser) {
+    state.analyser.disconnect();
+    state.analyser = null;
   }
   if (state.mediaStream) {
     state.mediaStream.getTracks().forEach(track => track.stop());
@@ -277,7 +434,7 @@ function stopRecording() {
   hideLivePartial();
 }
 
-// Downsample from device sample rate (e.g. 48kHz or 44.1kHz) to 16kHz 16-bit PCM
+// Linear Interpolation Downsampler (Any input rate -> 16,000 Hz 16-bit PCM)
 function downsampleToPCM16(buffer, inRate, outRate = 16000) {
   if (inRate === outRate) {
     const pcm = new Int16Array(buffer.length);
@@ -302,16 +459,6 @@ function downsampleToPCM16(buffer, inRate, outRate = 16000) {
     pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
   }
   return pcm16;
-}
-
-// Animate visualizer bars in real-time
-function updateVisualizer(volume) {
-  const norm = Math.min(1, volume * 10);
-  visualizerBars.forEach((bar, index) => {
-    const variance = Math.sin((index + 1) * 1.5) * 0.35 + 0.65;
-    const h = Math.max(4, Math.round(norm * 22 * variance));
-    bar.style.height = `${h}px`;
-  });
 }
 
 // -------------------------------------------------------------
@@ -486,7 +633,7 @@ echoCancelToggle.addEventListener('change', (e) => {
   state.echoProtectionEnabled = e.target.checked;
 });
 
-// Boot WebSocket on load
+// Boot WebSocket on page load
 window.addEventListener('DOMContentLoaded', () => {
   initWebSocket();
 });
